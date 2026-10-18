@@ -12,7 +12,7 @@ load_dotenv()
 
 app = FastAPI(title="Enterprise RAG API")
 
-# السماح للواجهة بالاتصال بالسيرفر
+# السماح للواجهة بالاتصال بالسيرفر (CORS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,10 +22,15 @@ app.add_middleware(
 )
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+
+# التهيئة فقط عند وجود المفتاح وبأسماء النماذج الرسمية المعرفية
 if GOOGLE_API_KEY:
-    # تم تعديل أسماء النماذج بحذف بادئة models/
-    Settings.llm = Gemini(model="gemini-1.5-flash", api_key=GOOGLE_API_KEY)
-    Settings.embed_model = GeminiEmbedding(model="text-embedding-004", api_key=GOOGLE_API_KEY)
+    try:
+        # استخدام gemini-1.5-flash-latest لمنع خطأ المسارات في v1beta
+        Settings.llm = Gemini(model_name="models/gemini-1.5-flash-latest", api_key=GOOGLE_API_KEY)
+        Settings.embed_model = GeminiEmbedding(model_name="models/text-embedding-004", api_key=GOOGLE_API_KEY)
+    except Exception as e:
+        print(f"Error initializing Gemini: {e}")
 
 class QueryRequest(BaseModel):
     question: str
@@ -37,6 +42,9 @@ def read_root():
 @app.post("/chat")
 def chat(request: QueryRequest):
     try:
+        if not GOOGLE_API_KEY:
+            raise HTTPException(status_code=500, detail="GOOGLE_API_KEY is missing on Render settings")
+            
         response = Settings.llm.complete(request.question)
         return {
             "answer": str(response),
