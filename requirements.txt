@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+llama-index
+llama-index-llms-gemini
+llama-index-embeddings-gemini
+python-dotenv
+pydantic
