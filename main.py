@@ -23,8 +23,9 @@ app.add_middleware(
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 if GOOGLE_API_KEY:
-    Settings.llm = Gemini(model="models/gemini-1.5-flash", api_key=GOOGLE_API_KEY)
-    Settings.embed_model = GeminiEmbedding(model="models/text-embedding-004", api_key=GOOGLE_API_KEY)
+    # تم تعديل أسماء النماذج بحذف بادئة models/
+    Settings.llm = Gemini(model="gemini-1.5-flash", api_key=GOOGLE_API_KEY)
+    Settings.embed_model = GeminiEmbedding(model="text-embedding-004", api_key=GOOGLE_API_KEY)
 
 class QueryRequest(BaseModel):
     question: str
