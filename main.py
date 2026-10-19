@@ -4,6 +4,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
+# منع LlamaIndex من البحث عن مفاتيح OpenAI افتراضياً
+os.environ["OPENAI_API_KEY"] = "dummy-key-to-bypass-llamaindex-default"
+
 from llama_index.core import Settings
 from llama_index.llms.gemini import Gemini
 from llama_index.embeddings.gemini import GeminiEmbedding
@@ -24,6 +27,7 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 if GOOGLE_API_KEY:
     try:
+        # تعيين نموذج اللسان ونموذج التضمين من جوجل بشكل صارم
         Settings.llm = Gemini(model_name="models/gemini-1.5-flash-latest", api_key=GOOGLE_API_KEY)
         Settings.embed_model = GeminiEmbedding(model_name="models/text-embedding-004", api_key=GOOGLE_API_KEY)
     except Exception as e:
