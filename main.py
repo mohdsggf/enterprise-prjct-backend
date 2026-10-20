@@ -18,18 +18,15 @@ app.add_middleware(
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-# استيراد إعدادات LlamaIndex بشكل آمن
-from llama_index.core import Settings
+# استيراد نموذج Gemini واستخدامه مباشرة بدون تمرير عبر إعدادات Settings العامة لـ LlamaIndex
 from llama_index.llms.gemini import Gemini
-from llama_index.embeddings.gemini import GeminiEmbedding
 
-# تهيئة أولية آمنة (لا تسبب انهيار السيرفر إن حدث خطأ في الشبكة أو الاسم)
-try:
-    if GOOGLE_API_KEY:
-        Settings.llm = Gemini(model_name="gemini-1.5-flash", api_key=GOOGLE_API_KEY)
-        Settings.embed_model = GeminiEmbedding(model_name="text-embedding-004", api_key=GOOGLE_API_KEY)
-except Exception as e:
-    print(f"Startup initialization notice: {e}")
+gemini_llm = None
+if GOOGLE_API_KEY:
+    try:
+        gemini_llm = Gemini(model_name="gemini-1.5-flash", api_key=GOOGLE_API_KEY)
+    except Exception as e:
+        print(f"Error initializing Gemini: {e}")
 
 class QueryRequest(BaseModel):
     question: str
@@ -41,14 +38,11 @@ def read_root():
 @app.post("/chat")
 def chat(request: QueryRequest):
     try:
-        if not GOOGLE_API_KEY:
-            raise HTTPException(status_code=500, detail="GOOGLE_API_KEY is missing on Render settings")
+        if not GOOGLE_API_KEY or not gemini_llm:
+            raise HTTPException(status_code=500, detail="GOOGLE_API_KEY is missing or Gemini failed to initialize")
             
-        # التأكد من تفعيل النموذج عند الطلب إذا لم يتم تحميله مسبقاً
-        if not Settings.llm:
-            Settings.llm = Gemini(model_name="gemini-1.5-flash", api_key=GOOGLE_API_KEY)
-
-        response = Settings.llm.complete(request.question)
+        # استخدام نموذج Gemini مباشرة لتجنب أي استدعاء وهمي لـ OpenAI
+        response = gemini_llm.complete(request.question)
         return {
             "answer": str(response),
             "sources": []
