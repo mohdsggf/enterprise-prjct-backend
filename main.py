@@ -39,8 +39,8 @@ def chat(request: QueryRequest):
     try:
         from llama_index.llms.gemini import Gemini
         
-        # تجربة التهيئة مع طباعة أي تفاصيل في حال الفشل
-        gemini_llm = Gemini(model_name="gemini-1.5-flash", api_key=api_key)
+        # استخدام نموذج gemini-2.0-flash المستقر والسريع
+        gemini_llm = Gemini(model_name="models/gemini-2.0-flash", api_key=api_key)
         response = gemini_llm.complete(request.question)
         
         return {
@@ -48,7 +48,6 @@ def chat(request: QueryRequest):
             "sources": []
         }
     except Exception as e:
-        # طباعة الخطأ التفصيلي في Render Logs وإرجاعه للتشخيص
         error_details = f"Gemini Error: {str(e)}"
         print(f"CRITICAL ERROR: {error_details}")
         traceback.print_exc()
