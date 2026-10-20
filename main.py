@@ -1,4 +1,5 @@
 import os
+import traceback
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -16,36 +17,39 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-
-# استيراد نموذج Gemini واستخدامه مباشرة بدون تمرير عبر إعدادات Settings العامة لـ LlamaIndex
-from llama_index.llms.gemini import Gemini
-
-gemini_llm = None
-if GOOGLE_API_KEY:
-    try:
-        gemini_llm = Gemini(model_name="gemini-1.5-flash", api_key=GOOGLE_API_KEY)
-    except Exception as e:
-        print(f"Error initializing Gemini: {e}")
-
 class QueryRequest(BaseModel):
     question: str
 
 @app.get("/")
 def read_root():
-    return {"status": "Enterprise RAG Service is Live! 🚀"}
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    key_status = "Present" if api_key else "Missing"
+    return {
+        "status": "Enterprise RAG Service is Live! 🚀",
+        "api_key_status": key_status
+    }
 
 @app.post("/chat")
 def chat(request: QueryRequest):
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    
+    if not api_key:
+        raise HTTPException(status_code=500, detail="API Key is missing in Render environment variables")
+
     try:
-        if not GOOGLE_API_KEY or not gemini_llm:
-            raise HTTPException(status_code=500, detail="GOOGLE_API_KEY is missing or Gemini failed to initialize")
-            
-        # استخدام نموذج Gemini مباشرة لتجنب أي استدعاء وهمي لـ OpenAI
+        from llama_index.llms.gemini import Gemini
+        
+        # تجربة التهيئة مع طباعة أي تفاصيل في حال الفشل
+        gemini_llm = Gemini(model_name="gemini-1.5-flash", api_key=api_key)
         response = gemini_llm.complete(request.question)
+        
         return {
             "answer": str(response),
             "sources": []
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # طباعة الخطأ التفصيلي في Render Logs وإرجاعه للتشخيص
+        error_details = f"Gemini Error: {str(e)}"
+        print(f"CRITICAL ERROR: {error_details}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=error_details)
