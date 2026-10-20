@@ -39,8 +39,8 @@ def chat(request: QueryRequest):
     try:
         from llama_index.llms.gemini import Gemini
         
-        # استخدام نموذج gemini-2.0-flash المستقر والسريع
-        gemini_llm = Gemini(model_name="models/gemini-2.0-flash", api_key=api_key)
+        # استخدام النموذج الجديد الذي حدده جوجل وطلب Lovable استخدامه
+        gemini_llm = Gemini(model_name="models/gemini-3.8-flash", api_key=api_key)
         response = gemini_llm.complete(request.question)
         
         return {
