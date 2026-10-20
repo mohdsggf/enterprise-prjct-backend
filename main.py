@@ -12,10 +12,9 @@ load_dotenv()
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-# تعيين النماذج مباشرةً على مستوى الإعدادات العامة لـ LlamaIndex
 if GOOGLE_API_KEY:
-    gemini_llm = Gemini(model_name="models/gemini-1.5-flash-latest", api_key=GOOGLE_API_KEY)
-    gemini_embed = GeminiEmbedding(model_name="models/text-embedding-004", api_key=GOOGLE_API_KEY)
+    gemini_llm = Gemini(model_name="gemini-1.5-flash", api_key=GOOGLE_API_KEY)
+    gemini_embed = GeminiEmbedding(model_name="text-embedding-004", api_key=GOOGLE_API_KEY)
     
     Settings.llm = gemini_llm
     Settings.embed_model = gemini_embed
@@ -43,7 +42,6 @@ def chat(request: QueryRequest):
         if not GOOGLE_API_KEY:
             raise HTTPException(status_code=500, detail="GOOGLE_API_KEY is missing on Render settings")
             
-        # استخدام كائن Gemini المحدد صراحةً للإجابة
         response = Settings.llm.complete(request.question)
         return {
             "answer": str(response),
