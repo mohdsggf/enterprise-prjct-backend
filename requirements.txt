@@ -5,3 +5,5 @@ pydantic
 llama-index-core
 llama-index-llms-gemini
 llama-index-embeddings-gemini
+requests
+python-multipart
