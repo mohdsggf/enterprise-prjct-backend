@@ -133,20 +133,32 @@ def chat(request: QueryRequest):
                     "match_count": 5
                 }
                 
+                print(f"Sending search request for question: {request.question}")
                 search_response = requests.post(LOVABLE_SEARCH_URL, json=search_payload, headers=headers, timeout=15)
+                print(f"Search Response Status: {search_response.status_code}")
+                print(f"Search Response Body: {search_response.text}")
                 
                 if search_response.status_code == 200:
                     matches = search_response.json()
+                    # إذا كانت النتيجة داخل كاي أو مصفوفة مباشرة
+                    if isinstance(matches, dict):
+                        matches = matches.get("matches", matches.get("results", []))
+                        
                     context_chunks = []
                     for match in matches:
-                        chunk_text = match.get("chunk_text", "")
-                        file_name = match.get("file_name", "Document")
-                        context_chunks.append(f"[{file_name}]: {chunk_text}")
-                        sources.append({"file_name": file_name, "score": match.get("similarity", 0)})
+                        chunk_text = match.get("chunk_text") or match.get("content", "")
+                        file_name = match.get("file_name") or match.get("metadata", {}).get("file_name", "Document")
+                        similarity = match.get("similarity") or match.get("score", 0)
+                        
+                        if chunk_text:
+                            context_chunks.append(f"[{file_name}]: {chunk_text}")
+                            sources.append({"file_name": file_name, "score": similarity})
                     
                     context_str = "\n\n".join(context_chunks)
+                    print(f"Extracted context chunks count: {len(context_chunks)}")
             except Exception as e:
                 print(f"RAG Search warning: {e}")
+                traceback.print_exc()
 
         from llama_index.llms.gemini import Gemini
         
@@ -154,7 +166,7 @@ def chat(request: QueryRequest):
         
         if context_str:
             prompt = (
-                f"You are an enterprise AI assistant. Use the following retrieved document excerpts to answer the question accurately.\n\n"
+                f"You are an enterprise AI assistant. Use the following retrieved document excerpts to answer the question accurately and cite the sources.\n\n"
                 f"Context:\n{context_str}\n\n"
                 f"Question: {request.question}\n\n"
                 f"Answer:"
