@@ -19,7 +19,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# الرابط المعتمد الصحيح للجسر الآمن من Lovable
+# الرابط المعتمد للجسر الآمن من Lovable
 LOVABLE_BASE_URL = "https://project--c5115517-92fe-4704-84c8-dbab9c792a46-dev.lovable.app"
 LOVABLE_SEARCH_URL = f"{LOVABLE_BASE_URL}/api/public/rag/search"
 LOVABLE_INGEST_URL = f"{LOVABLE_BASE_URL}/api/public/rag/ingest"
@@ -38,10 +38,10 @@ def read_root():
     }
 
 def get_embedding(text: str, api_key: str):
-    """توليد Embedding متوافق بـ 1536 بعد"""
+    """توليد Embedding باستخدام النموذج الحديث gemini-embedding-001 بـ 1536 بعد"""
     from llama_index.embeddings.gemini import GeminiEmbedding
     
-    embed_model = GeminiEmbedding(model_name="models/text-embedding-004", api_key=api_key)
+    embed_model = GeminiEmbedding(model_name="models/gemini-embedding-001", api_key=api_key)
     embedding = embed_model.get_text_embedding(text)
     
     if len(embedding) > 1536:
@@ -67,7 +67,7 @@ async def upload_document(file: UploadFile = File(...)):
         if not text.strip():
             raise HTTPException(status_code=400, detail="File content is empty or unreadable text")
 
-        # تقطيع النص إلى فقرات (Chunks)
+        # تقطيع النص إلى فقرات
         chunks_text = [text[i:i+1000] for i in range(0, len(text), 800)]
         
         chunks_payload = []
