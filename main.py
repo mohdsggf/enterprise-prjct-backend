@@ -1,7 +1,8 @@
 import os
 import requests
 import traceback
-from fastapi import FastAPI, HTTPException
+from typing import List, Optional
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -18,9 +19,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# بيانات الجسر الآمن من Lovable
-LOVABLE_SEARCH_URL = "https://project--c5115517-92fe-4704-84c8-dbab9c792a46-dev.lovable.app/api/public/rag/search"
-RAG_INGEST_SECRET = os.getenv("RAG_INGEST_SECRET")
+# الرابط المعتمد الصحيح للجسر الآمن من Lovable
+LOVABLE_BASE_URL = "https://project--c5115517-92fe-4704-84c8-dbab9c792a46-dev.lovable.app"
+LOVABLE_SEARCH_URL = f"{LOVABLE_BASE_URL}/api/public/rag/search"
+LOVABLE_INGEST_URL = f"{LOVABLE_BASE_URL}/api/public/rag/ingest"
 
 class QueryRequest(BaseModel):
     question: str
@@ -28,22 +30,20 @@ class QueryRequest(BaseModel):
 @app.get("/")
 def read_root():
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-    key_status = "Present" if api_key else "Missing"
-    secret_status = "Present" if RAG_INGEST_SECRET else "Missing"
+    secret_key = os.getenv("RAG_INGEST_SECRET")
     return {
         "status": "Enterprise RAG Service is Live! 🚀",
-        "api_key_status": key_status,
-        "rag_secret_status": secret_status
+        "api_key_status": "Present" if api_key else "Missing",
+        "rag_secret_status": "Present" if secret_key else "Missing"
     }
 
 def get_embedding(text: str, api_key: str):
-    """توليد Embedding برقم أبعاد 1536 متوافق مع Lovable"""
+    """توليد Embedding متوافق بـ 1536 بعد"""
     from llama_index.embeddings.gemini import GeminiEmbedding
     
     embed_model = GeminiEmbedding(model_name="models/text-embedding-004", api_key=api_key)
     embedding = embed_model.get_text_embedding(text)
     
-    # تأكيد أو ضبط طول المتجه إلى 1536 إذا لزم الأمر
     if len(embedding) > 1536:
         embedding = embedding[:1536]
     elif len(embedding) < 1536:
@@ -51,19 +51,74 @@ def get_embedding(text: str, api_key: str):
         
     return embedding
 
+@app.post("/upload")
+async def upload_document(file: UploadFile = File(...)):
+    """نقطة استلام المستندات، تقطيعها، واستخراج الـ Embeddings وإرسالها للـ Bridge"""
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    secret_key = os.getenv("RAG_INGEST_SECRET")
+    
+    if not api_key or not secret_key:
+        raise HTTPException(status_code=500, detail="API Key or RAG Secret is missing")
+
+    try:
+        content = await file.read()
+        text = content.decode("utf-8", errors="ignore")
+        
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="File content is empty or unreadable text")
+
+        # تقطيع النص إلى فقرات (Chunks)
+        chunks_text = [text[i:i+1000] for i in range(0, len(text), 800)]
+        
+        chunks_payload = []
+        for index, chunk_str in enumerate(chunks_text):
+            emb = get_embedding(chunk_str, api_key)
+            chunks_payload.append({
+                "chunk_index": index,
+                "chunk_text": chunk_str,
+                "page_number": 1,
+                "metadata": {},
+                "embedding": emb
+            })
+
+        headers = {
+            "Content-Type": "application/json",
+            "x-ingest-secret": secret_key
+        }
+
+        payload = {
+            "document": {
+                "file_name": file.filename,
+                "file_size": len(content),
+                "file_type": file.content_type or "text/plain",
+                "page_count": 1
+            },
+            "chunks": chunks_payload
+        }
+
+        response = requests.post(LOVABLE_INGEST_URL, json=payload, headers=headers, timeout=30)
+        
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Ingestion failed: {response.text}")
+
+        return {"status": "success", "file_name": file.filename, "chunks_count": len(chunks_payload)}
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/chat")
 def chat(request: QueryRequest):
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     secret_key = os.getenv("RAG_INGEST_SECRET")
     
     if not api_key:
-        raise HTTPException(status_code=500, detail="API Key is missing in Render environment variables")
+        raise HTTPException(status_code=500, detail="API Key is missing")
 
     try:
         context_str = ""
         sources = []
         
-        # 1. محاولة إجراء البحث الدلالي في المستندات إذا كان المفتاح السري موجوداً
         if secret_key:
             try:
                 query_embedding = get_embedding(request.question, api_key)
@@ -78,7 +133,7 @@ def chat(request: QueryRequest):
                     "match_count": 5
                 }
                 
-                search_response = requests.post(LOVABLE_SEARCH_URL, json=search_payload, headers=headers, timeout=10)
+                search_response = requests.post(LOVABLE_SEARCH_URL, json=search_payload, headers=headers, timeout=15)
                 
                 if search_response.status_code == 200:
                     matches = search_response.json()
@@ -93,7 +148,6 @@ def chat(request: QueryRequest):
             except Exception as e:
                 print(f"RAG Search warning: {e}")
 
-        # 2. إعداد المطالبة (Prompt) وإرسالها إلى Gemini
         from llama_index.llms.gemini import Gemini
         
         gemini_llm = Gemini(model_name="models/gemini-3.8-flash", api_key=api_key)
