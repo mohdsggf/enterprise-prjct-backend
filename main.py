@@ -228,7 +228,7 @@ def chat(request: QueryRequest):
             "sources": sources
         }
         
-    exceptException as e:
+    except Exception as e:
         error_details = f"Gemini/RAG Error: {str(e)}"
         print(f"CRITICAL ERROR: {error_details}")
         traceback.print_exc()
