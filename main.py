@@ -1,15 +1,18 @@
 import os
+import io
 import requests
 import traceback
-from typing import List, Optional
+from typing import List
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from pypdf import PdfReader
+from docx import Document
 
 load_dotenv()
 
-app = FastAPI(title="Enterprise RAG API")
+app = FastAPI(title="Enterprise RAG API - Multi-Format")
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,13 +35,13 @@ def read_root():
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     secret_key = os.getenv("RAG_INGEST_SECRET")
     return {
-        "status": "Enterprise RAG Service is Live! 🚀",
+        "status": "Enterprise RAG Service (Multi-Format) is Live! 🚀",
         "api_key_status": "Present" if api_key else "Missing",
         "rag_secret_status": "Present" if secret_key else "Missing"
     }
 
 def get_embedding(text: str, api_key: str):
-    """توليد Embedding باستخدام النموذج الحديث gemini-embedding-001 بـ 1536 بعد"""
+    """توليد Embedding باستخدام نموذج gemini-embedding-001 بـ 1536 بعد"""
     from llama_index.embeddings.gemini import GeminiEmbedding
     
     embed_model = GeminiEmbedding(model_name="models/gemini-embedding-001", api_key=api_key)
@@ -51,61 +54,91 @@ def get_embedding(text: str, api_key: str):
         
     return embedding
 
+def extract_text_from_file(file_content: bytes, filename: str) -> str:
+    """استخراج النصوص بذكاء بناءً على نوع الملف (PDF, Word, TXT)"""
+    file_ext = filename.split(".")[-1].lower()
+    text = ""
+    
+    try:
+        if file_ext == "pdf":
+            reader = PdfReader(io.BytesIO(file_content))
+            for page in reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+        elif file_ext in ["docx", "doc"]:
+            doc = Document(io.BytesIO(file_content))
+            for para in doc.paragraphs:
+                if para.text:
+                    text += para.text + "\n"
+        else:
+            # افتراضي للنصوص العادية
+            text = file_content.decode("utf-8", errors="ignore")
+    except Exception as e:
+        print(f"Error parsing file {filename}: {e}")
+        
+    return text
+
 @app.post("/upload")
-async def upload_document(file: UploadFile = File(...)):
-    """نقطة استلام المستندات، تقطيعها، واستخراج الـ Embeddings وإرسالها للـ Bridge"""
+async def upload_documents(files: List[UploadFile] = File(...)):
+    """نقطة دعم رفع ملفات متعددة (PDF, Word, TXT) معالجة وفهرستها دفعة واحدة"""
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     secret_key = os.getenv("RAG_INGEST_SECRET")
     
     if not api_key or not secret_key:
         raise HTTPException(status_code=500, detail="API Key or RAG Secret is missing")
 
-    try:
-        content = await file.read()
-        text = content.decode("utf-8", errors="ignore")
-        
-        if not text.strip():
-            raise HTTPException(status_code=400, detail="File content is empty or unreadable text")
+    results = []
+    headers = {
+        "Content-Type": "application/json",
+        "x-ingest-secret": secret_key
+    }
 
-        # تقطيع النص إلى فقرات
-        chunks_text = [text[i:i+1000] for i in range(0, len(text), 800)]
-        
-        chunks_payload = []
-        for index, chunk_str in enumerate(chunks_text):
-            emb = get_embedding(chunk_str, api_key)
-            chunks_payload.append({
-                "chunk_index": index,
-                "chunk_text": chunk_str,
-                "page_number": 1,
-                "metadata": {},
-                "embedding": emb
-            })
+    for file in files:
+        try:
+            content = await file.read()
+            text = extract_text_from_file(content, file.filename)
+            
+            if not text.strip():
+                results.append({"file_name": file.filename, "status": "skipped", "reason": "Empty or unreadable text"})
+                continue
 
-        headers = {
-            "Content-Type": "application/json",
-            "x-ingest-secret": secret_key
-        }
+            # تقطيع النص إلى فقرات
+            chunks_text = [text[i:i+1000] for i in range(0, len(text), 800)]
+            
+            chunks_payload = []
+            for index, chunk_str in enumerate(chunks_text):
+                emb = get_embedding(chunk_str, api_key)
+                chunks_payload.append({
+                    "chunk_index": index,
+                    "chunk_text": chunk_str,
+                    "page_number": 1,
+                    "metadata": {},
+                    "embedding": emb
+                })
 
-        payload = {
-            "document": {
-                "file_name": file.filename,
-                "file_size": len(content),
-                "file_type": file.content_type or "text/plain",
-                "page_count": 1
-            },
-            "chunks": chunks_payload
-        }
+            payload = {
+                "document": {
+                    "file_name": file.filename,
+                    "file_size": len(content),
+                    "file_type": file.content_type or "application/octet-stream",
+                    "page_count": max(1, len(text) // 2000)
+                },
+                "chunks": chunks_payload
+            }
 
-        response = requests.post(LOVABLE_INGEST_URL, json=payload, headers=headers, timeout=30)
-        
-        if response.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"Ingestion failed: {response.text}")
+            response = requests.post(LOVABLE_INGEST_URL, json=payload, headers=headers, timeout=60)
+            
+            if response.status_code == 200:
+                results.append({"file_name": file.filename, "status": "success", "chunks_count": len(chunks_payload)})
+            else:
+                results.append({"file_name": file.filename, "status": "failed", "error": response.text})
 
-        return {"status": "success", "file_name": file.filename, "chunks_count": len(chunks_payload)}
+        except Exception as e:
+            traceback.print_exc()
+            results.append({"file_name": file.filename, "status": "error", "error": str(e)})
 
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "batch_processed", "results": results}
 
 @app.post("/chat")
 def chat(request: QueryRequest):
@@ -133,14 +166,10 @@ def chat(request: QueryRequest):
                     "match_count": 5
                 }
                 
-                print(f"Sending search request for question: {request.question}")
                 search_response = requests.post(LOVABLE_SEARCH_URL, json=search_payload, headers=headers, timeout=15)
-                print(f"Search Response Status: {search_response.status_code}")
-                print(f"Search Response Body: {search_response.text}")
                 
                 if search_response.status_code == 200:
                     matches = search_response.json()
-                    # إذا كانت النتيجة داخل كاي أو مصفوفة مباشرة
                     if isinstance(matches, dict):
                         matches = matches.get("matches", matches.get("results", []))
                         
@@ -155,10 +184,8 @@ def chat(request: QueryRequest):
                             sources.append({"file_name": file_name, "score": similarity})
                     
                     context_str = "\n\n".join(context_chunks)
-                    print(f"Extracted context chunks count: {len(context_chunks)}")
             except Exception as e:
                 print(f"RAG Search warning: {e}")
-                traceback.print_exc()
 
         from llama_index.llms.gemini import Gemini
         
