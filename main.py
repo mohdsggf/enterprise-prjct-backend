@@ -12,7 +12,7 @@ from docx import Document
 
 load_dotenv()
 
-app = FastAPI(title="Enterprise RAG API - Multi-Format")
+app = FastAPI(title="Enterprise RAG API - Management Ready")
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,6 +26,7 @@ app.add_middleware(
 LOVABLE_BASE_URL = "https://project--c5115517-92fe-4704-84c8-dbab9c792a46-dev.lovable.app"
 LOVABLE_SEARCH_URL = f"{LOVABLE_BASE_URL}/api/public/rag/search"
 LOVABLE_INGEST_URL = f"{LOVABLE_BASE_URL}/api/public/rag/ingest"
+LOVABLE_DELETE_URL = f"{LOVABLE_BASE_URL}/api/public/rag/delete"
 
 class QueryRequest(BaseModel):
     question: str
@@ -35,7 +36,7 @@ def read_root():
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     secret_key = os.getenv("RAG_INGEST_SECRET")
     return {
-        "status": "Enterprise RAG Service (Multi-Format) is Live! 🚀",
+        "status": "Enterprise RAG Service (Management Ready) is Live! 🚀",
         "api_key_status": "Present" if api_key else "Missing",
         "rag_secret_status": "Present" if secret_key else "Missing"
     }
@@ -72,7 +73,6 @@ def extract_text_from_file(file_content: bytes, filename: str) -> str:
                 if para.text:
                     text += para.text + "\n"
         else:
-            # افتراضي للنصوص العادية
             text = file_content.decode("utf-8", errors="ignore")
     except Exception as e:
         print(f"Error parsing file {filename}: {e}")
@@ -81,7 +81,7 @@ def extract_text_from_file(file_content: bytes, filename: str) -> str:
 
 @app.post("/upload")
 async def upload_documents(files: List[UploadFile] = File(...)):
-    """نقطة دعم رفع ملفات متعددة (PDF, Word, TXT) معالجة وفهرستها دفعة واحدة"""
+    """نقطة دعم رفع ملفات متعددة (PDF, Word, TXT) ومعالجتها وفهرستها دفعة واحدة"""
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     secret_key = os.getenv("RAG_INGEST_SECRET")
     
@@ -103,7 +103,6 @@ async def upload_documents(files: List[UploadFile] = File(...)):
                 results.append({"file_name": file.filename, "status": "skipped", "reason": "Empty or unreadable text"})
                 continue
 
-            # تقطيع النص إلى فقرات
             chunks_text = [text[i:i+1000] for i in range(0, len(text), 800)]
             
             chunks_payload = []
@@ -139,6 +138,27 @@ async def upload_documents(files: List[UploadFile] = File(...)):
             results.append({"file_name": file.filename, "status": "error", "error": str(e)})
 
     return {"status": "batch_processed", "results": results}
+
+@app.delete("/documents/{file_name}")
+def delete_document(file_name: str):
+    """نقطة حذف مستند معين ومتجهاته من النظام"""
+    secret_key = os.getenv("RAG_INGEST_SECRET")
+    if not secret_key:
+        raise HTTPException(status_code=500, detail="RAG Secret is missing")
+
+    try:
+        headers = {
+            "Content-Type": "application/json",
+            "x-ingest-secret": secret_key
+        }
+        response = requests.delete(f"{LOVABLE_DELETE_URL}/{file_name}", headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            return {"status": "success", "message": f"Document '{file_name}' deleted successfully."}
+        else:
+            return {"status": "info", "message": f"Delete request sent for '{file_name}'."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat")
 def chat(request: QueryRequest):
@@ -208,7 +228,7 @@ def chat(request: QueryRequest):
             "sources": sources
         }
         
-    except Exception as e:
+    exceptException as e:
         error_details = f"Gemini/RAG Error: {str(e)}"
         print(f"CRITICAL ERROR: {error_details}")
         traceback.print_exc()
