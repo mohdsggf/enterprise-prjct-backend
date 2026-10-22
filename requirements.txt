@@ -7,3 +7,5 @@ llama-index-llms-gemini
 llama-index-embeddings-gemini
 requests
 python-multipart
+pypdf
+python-docx
