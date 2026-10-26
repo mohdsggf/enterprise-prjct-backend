@@ -1,11 +1,6 @@
 fastapi
 uvicorn
-python-dotenv
 pydantic
-llama-index-core
-llama-index-llms-gemini
-llama-index-embeddings-gemini
-requests
-python-multipart
-pypdf
-python-docx
+google-generativeai
+psycopg2-binary
+pymysql
