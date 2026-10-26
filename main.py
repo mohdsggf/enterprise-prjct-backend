@@ -72,8 +72,8 @@ class QueryRequest(BaseModel):
     db_url: str = None  # رابط الاتصال الاختياري لقاعدة بيانات العميل (مثل PostgreSQL)
 
 def generate_with_fallback(prompt_text: str):
-    """الاعتماد على الموديلات الأساسية المستقرة والمعتمدة رسمياً"""
-    candidate_models = ["gemini-1.5-flash", "gemini-pro"]
+    """الاعتماد على أحدث الموديلات المستقرة والمعتمدة"""
+    candidate_models = ["gemini-2.0-flash", "gemini-1.5-flash"]
     last_error = None
     for model_name in candidate_models:
         try:
