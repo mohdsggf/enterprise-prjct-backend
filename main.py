@@ -18,8 +18,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# تهيئة Gemini API
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# تهيئة Gemini API (دعم GEMINI_API_KEY أو GOOGLE_API_KEY)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
@@ -106,8 +106,14 @@ def query_database(req: QueryRequest):
         2. Return ONLY the raw SQL query without any explanation, markdown, code blocks (```sql), or extra text.
         """
 
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        response = model.generate_content(prompt)
+        # استخدام اسم الموديل المستقر المتاح
+        try:
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            response = model.generate_content(prompt)
+        except Exception:
+            model = genai.GenerativeModel("gemini-2.0-flash")
+            response = model.generate_content(prompt)
+
         sql_query = response.text.strip().replace("```sql", "").replace("```", "").strip()
 
         # تنفيذ استعلام SQL على قاعدة البيانات
