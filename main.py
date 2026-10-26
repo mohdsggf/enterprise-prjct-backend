@@ -18,19 +18,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# تهيئة Gemini API (دعم GEMINI_API_KEY أو GOOGLE_API_KEY)
+# تهيئة Gemini API (يدعم GEMINI_API_KEY أو GOOGLE_API_KEY)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
 DB_FILE = "demo_company.db"
 
-# 1. إنشاء قاعدة بيانات تجريبية محلياً عند تشغيل السيرفر
 def init_demo_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    
-    # إنشاء جدول المبيعات
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS sales (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,8 +41,6 @@ def init_demo_db():
             sale_date DATE
         )
     ''')
-    
-    # التأكد من عدم تكرار إضافة البيانات التجريبية
     cursor.execute("SELECT COUNT(*) FROM sales")
     if cursor.fetchone()[0] == 0:
         sample_sales = [
@@ -67,11 +62,24 @@ def init_demo_db():
         conn.commit()
     conn.close()
 
-# تشغيل تهيئة قاعدة البيانات عند إقلاع السيرفر
 init_demo_db()
 
 class QueryRequest(BaseModel):
     question: str
+
+def generate_with_fallback(prompt_text: str):
+    """دالة مرنة لتوليد النص وتجربة الموديلات المتاحة تلقائياً"""
+    candidate_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-flash-latest"]
+    last_error = None
+    for model_name in candidate_models:
+        try:
+            model = genai.GenerativeModel(model_name)
+            res = model.generate_content(prompt_text)
+            return res.text
+        except Exception as e:
+            last_error = e
+            continue
+    raise Exception(f"All Gemini models failed. Last error: {str(last_error)}")
 
 @app.post("/api/query-database")
 def query_database(req: QueryRequest):
@@ -79,7 +87,6 @@ def query_database(req: QueryRequest):
         raise HTTPException(status_code=500, detail="Gemini API Key is missing.")
     
     try:
-        # Schema الخاصة بقاعدة البيانات
         db_schema = """
         Table: sales
         Columns:
@@ -106,17 +113,10 @@ def query_database(req: QueryRequest):
         2. Return ONLY the raw SQL query without any explanation, markdown, code blocks (```sql), or extra text.
         """
 
-        # استخدام اسم الموديل المستقر المتاح
-        try:
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            response = model.generate_content(prompt)
-        except Exception:
-            model = genai.GenerativeModel("gemini-2.0-flash")
-            response = model.generate_content(prompt)
+        raw_sql_response = generate_with_fallback(prompt)
+        sql_query = raw_sql_response.strip().replace("```sql", "").replace("```", "").strip()
 
-        sql_query = response.text.strip().replace("```sql", "").replace("```", "").strip()
-
-        # تنفيذ استعلام SQL على قاعدة البيانات
+        # تنفيذ استعلام SQL
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute(sql_query)
@@ -124,7 +124,7 @@ def query_database(req: QueryRequest):
         columns = [description[0] for description in cursor.description]
         conn.close()
 
-        # صياغة الملخص والبطاقات عبر Gemini بناءً على النتائج
+        # صياغة الملخص
         summary_prompt = f"""
         السؤال: "{req.question}"
         استعلام SQL المنفذ: "{sql_query}"
@@ -134,21 +134,19 @@ def query_database(req: QueryRequest):
 
         المطلوب: قم بصياغة إجابة ملخصة واحترافية باللغة العربية تشرح نتائج البيانات بدقة وبساطة.
         """
-        summary_res = model.generate_content(summary_prompt)
+        summary_text = generate_with_fallback(summary_prompt)
 
-        # تحضير الهيكل المسترجع لـ Lovable
         formatted_table = {
             "columns": columns,
             "rows": [dict(zip(columns, row)) for row in rows]
         }
 
-        # إنشاء بطاقات أرقام تلقائية في حال وجود مجاميع أو أعداد
         metrics = []
         if len(rows) == 1 and len(columns) == 1:
             metrics.append({"label": columns[0], "value": str(rows[0][0])})
 
         return {
-            "summary": summary_res.text.strip(),
+            "summary": summary_text.strip(),
             "sql_query": sql_query,
             "table": formatted_table,
             "metrics": metrics
