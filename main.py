@@ -71,20 +71,32 @@ class QueryRequest(BaseModel):
     question: str
     db_url: str = None  # رابط الاتصال الاختياري لقاعدة بيانات العميل (مثل PostgreSQL)
 
+def get_working_model():
+    """البحث التلقائي والذكي عن أي موديل متاح في الحساب يدعم توليد المحتوى"""
+    try:
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # محاولة العثور على موديل سريع (Flash) أولاً
+        flash_models = [m for m in available_models if 'flash' in m.lower()]
+        if flash_models:
+            return genai.GenerativeModel(flash_models[0])
+            
+        # إذا لم يوجد، نأخذ أي موديل متاح يدعم الخدمة
+        if available_models:
+            return genai.GenerativeModel(available_models[0])
+    except Exception:
+        pass
+    
+    # حل احتياطي أخير في حال فشل الاتصال بقائمة الموديلات
+    return genai.GenerativeModel("gemini-1.5-flash")
+
 def generate_with_fallback(prompt_text: str):
-    """الاعتماد على أحدث الموديلات المستقرة والمعتمدة"""
-    candidate_models = ["gemini-2.0-flash", "gemini-1.5-flash"]
-    last_error = None
-    for model_name in candidate_models:
-        try:
-            model = genai.GenerativeModel(model_name)
-            res = model.generate_content(prompt_text)
-            if res and res.text:
-                return res.text
-        except Exception as e:
-            last_error = e
-            continue
-    raise Exception(f"All Gemini models failed. Last error: {str(last_error)}")
+    """توليد النص باستخدام الموديل المكتشف تلقائياً"""
+    model = get_working_model()
+    res = model.generate_content(prompt_text)
+    if res and res.text:
+        return res.text
+    raise Exception("Model returned empty response.")
 
 def execute_query(db_url: str, sql_query: str):
     """تنفيذ استعلام SQL بناءً على نوع قاعدة البيانات (SQLite أو PostgreSQL)"""
