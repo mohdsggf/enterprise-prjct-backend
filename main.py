@@ -1,19 +1,15 @@
 import os
-import io
-import requests
-import traceback
-from typing import List
-from fastapi import FastAPI, HTTPException, UploadFile, File
+import sqlite3
+import json
+import re
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from dotenv import load_dotenv
-from pypdf import PdfReader
-from docx import Document
+import google.generativeai as genai
 
-load_dotenv()
+app = FastAPI(title="Enterprise AI Engine & Text-to-SQL")
 
-app = FastAPI(title="Enterprise RAG API - Management Ready")
-
+# إعدادات CORS للسماح لـ Lovable بالاتصال بالـ Backend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,214 +18,135 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# الرابط المعتمد للجسر الآمن من Lovable
-LOVABLE_BASE_URL = "https://project--c5115517-92fe-4704-84c8-dbab9c792a46-dev.lovable.app"
-LOVABLE_SEARCH_URL = f"{LOVABLE_BASE_URL}/api/public/rag/search"
-LOVABLE_INGEST_URL = f"{LOVABLE_BASE_URL}/api/public/rag/ingest"
-LOVABLE_DELETE_URL = f"{LOVABLE_BASE_URL}/api/public/rag/delete"
+# تهيئة Gemini API
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+
+DB_FILE = "demo_company.db"
+
+# 1. إنشاء قاعدة بيانات تجريبية محلياً عند تشغيل السيرفر
+def init_demo_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    # إنشاء جدول المبيعات
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sales (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            branch VARCHAR(50),
+            city VARCHAR(50),
+            product_name VARCHAR(100),
+            category VARCHAR(50),
+            quantity INTEGER,
+            unit_price REAL,
+            total_amount REAL,
+            sale_date DATE
+        )
+    ''')
+    
+    # التأكد من عدم تكرار إضافة البيانات التجريبية
+    cursor.execute("SELECT COUNT(*) FROM sales")
+    if cursor.fetchone()[0] == 0:
+        sample_sales = [
+            ('فرع الروضة', 'جدة', 'وجبة برجر دبل', 'وجبات', 150, 35.0, 5250.0, '2026-10-01'),
+            ('فرع الروضة', 'جدة', 'بطاطس سوبر', 'مقبلات', 200, 15.0, 3000.0, '2026-10-01'),
+            ('فرع العليا', 'الرياض', 'وجبة برجر دبل', 'وجبات', 300, 35.0, 10500.0, '2026-10-02'),
+            ('فرع العليا', 'الرياض', 'عصير برتقال طازج', 'مشروبات', 120, 12.0, 1440.0, '2026-10-02'),
+            ('فرع الشاطئ', 'جدة', 'وجبة دجاج كريسبي', 'وجبات', 180, 30.0, 5400.0, '2026-10-03'),
+            ('فرع الشاطئ', 'جدة', 'حلى تشيز كيك', 'حلويات', 90, 22.0, 1980.0, '2026-10-03'),
+            ('فرع الفيصلية', 'الدمام', 'وجبة برجر دبل', 'وجبات', 110, 35.0, 3850.0, '2026-10-04'),
+            ('فرع الفيصلية', 'الدمام', 'بطاطس سوبر', 'مقبلات', 140, 15.0, 2100.0, '2026-10-04'),
+            ('فرع الروضة', 'جدة', 'عصير برتقال طازج', 'مشروبات', 210, 12.0, 2520.0, '2026-10-05'),
+            ('فرع العليا', 'الرياض', 'حلى تشيز كيك', 'حلويات', 150, 22.0, 3300.0, '2026-10-05')
+        ]
+        cursor.executemany('''
+            INSERT INTO sales (branch, city, product_name, category, quantity, unit_price, total_amount, sale_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', sample_sales)
+        conn.commit()
+    conn.close()
+
+# تشغيل تهيئة قاعدة البيانات عند إقلاع السيرفر
+init_demo_db()
 
 class QueryRequest(BaseModel):
     question: str
 
-@app.get("/")
-def read_root():
-    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-    secret_key = os.getenv("RAG_INGEST_SECRET")
-    return {
-        "status": "Enterprise RAG Service (Management Ready) is Live! 🚀",
-        "api_key_status": "Present" if api_key else "Missing",
-        "rag_secret_status": "Present" if secret_key else "Missing"
-    }
-
-def get_embedding(text: str, api_key: str):
-    """توليد Embedding باستخدام نموذج gemini-embedding-001 بـ 1536 بعد"""
-    from llama_index.embeddings.gemini import GeminiEmbedding
-    
-    embed_model = GeminiEmbedding(model_name="models/gemini-embedding-001", api_key=api_key)
-    embedding = embed_model.get_text_embedding(text)
-    
-    if len(embedding) > 1536:
-        embedding = embedding[:1536]
-    elif len(embedding) < 1536:
-        embedding = embedding + [0.0] * (1536 - len(embedding))
-        
-    return embedding
-
-def extract_text_from_file(file_content: bytes, filename: str) -> str:
-    """استخراج النصوص بذكاء بناءً على نوع الملف (PDF, Word, TXT)"""
-    file_ext = filename.split(".")[-1].lower()
-    text = ""
+@app.post("/api/query-database")
+def query_database(req: QueryRequest):
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="Gemini API Key is missing.")
     
     try:
-        if file_ext == "pdf":
-            reader = PdfReader(io.BytesIO(file_content))
-            for page in reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
-        elif file_ext in ["docx", "doc"]:
-            doc = Document(io.BytesIO(file_content))
-            for para in doc.paragraphs:
-                if para.text:
-                    text += para.text + "\n"
-        else:
-            text = file_content.decode("utf-8", errors="ignore")
-    except Exception as e:
-        print(f"Error parsing file {filename}: {e}")
-        
-    return text
+        # Schema الخاصة بقاعدة البيانات
+        db_schema = """
+        Table: sales
+        Columns:
+        - id: INTEGER (Primary Key)
+        - branch: TEXT (اسم الفرع، مثل 'فرع الروضة', 'فرع العليا', 'فرع الشاطئ', 'فرع الفيصلية')
+        - city: TEXT (المدينة، مثل 'جدة', 'الرياض', 'الدمام')
+        - product_name: TEXT (اسم المنتج)
+        - category: TEXT (الفئة، مثل 'وجبات', 'مقبلات', 'مشروبات', 'حلويات')
+        - quantity: INTEGER (الكمية المباعة)
+        - unit_price: REAL (سعر الوحدة بالريال)
+        - total_amount: REAL (المبلغ الإجمالي بالريال = quantity * unit_price)
+        - sale_date: DATE (تاريخ البيع بتنسيق YYYY-MM-DD)
+        """
 
-@app.post("/upload")
-async def upload_documents(files: List[UploadFile] = File(...)):
-    """نقطة دعم رفع ملفات متعددة (PDF, Word, TXT) ومعالجتها وفهرستها دفعة واحدة"""
-    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-    secret_key = os.getenv("RAG_INGEST_SECRET")
-    
-    if not api_key or not secret_key:
-        raise HTTPException(status_code=500, detail="API Key or RAG Secret is missing")
+        prompt = f"""
+        You are an expert SQLite SQL developer. 
+        Database Schema:
+        {db_schema}
 
-    results = []
-    headers = {
-        "Content-Type": "application/json",
-        "x-ingest-secret": secret_key
-    }
+        User Question: "{req.question}"
 
-    for file in files:
-        try:
-            content = await file.read()
-            text = extract_text_from_file(content, file.filename)
-            
-            if not text.strip():
-                results.append({"file_name": file.filename, "status": "skipped", "reason": "Empty or unreadable text"})
-                continue
+        Tasks:
+        1. Generate a valid SQLite SQL query to answer the user question.
+        2. Return ONLY the raw SQL query without any explanation, markdown, code blocks (```sql), or extra text.
+        """
 
-            chunks_text = [text[i:i+1000] for i in range(0, len(text), 800)]
-            
-            chunks_payload = []
-            for index, chunk_str in enumerate(chunks_text):
-                emb = get_embedding(chunk_str, api_key)
-                chunks_payload.append({
-                    "chunk_index": index,
-                    "chunk_text": chunk_str,
-                    "page_number": 1,
-                    "metadata": {},
-                    "embedding": emb
-                })
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        response = model.generate_content(prompt)
+        sql_query = response.text.strip().replace("```sql", "").replace("```", "").strip()
 
-            payload = {
-                "document": {
-                    "file_name": file.filename,
-                    "file_size": len(content),
-                    "file_type": file.content_type or "application/octet-stream",
-                    "page_count": max(1, len(text) // 2000)
-                },
-                "chunks": chunks_payload
-            }
+        # تنفيذ استعلام SQL على قاعدة البيانات
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(sql_query)
+        rows = cursor.fetchall()
+        columns = [description[0] for description in cursor.description]
+        conn.close()
 
-            response = requests.post(LOVABLE_INGEST_URL, json=payload, headers=headers, timeout=60)
-            
-            if response.status_code == 200:
-                results.append({"file_name": file.filename, "status": "success", "chunks_count": len(chunks_payload)})
-            else:
-                results.append({"file_name": file.filename, "status": "failed", "error": response.text})
+        # صياغة الملخص والبطاقات عبر Gemini بناءً على النتائج
+        summary_prompt = f"""
+        السؤال: "{req.question}"
+        استعلام SQL المنفذ: "{sql_query}"
+        نتائج قاعدة البيانات:
+        الأعمدة: {columns}
+        الصفوف: {rows}
 
-        except Exception as e:
-            traceback.print_exc()
-            results.append({"file_name": file.filename, "status": "error", "error": str(e)})
+        المطلوب: قم بصياغة إجابة ملخصة واحترافية باللغة العربية تشرح نتائج البيانات بدقة وبساطة.
+        """
+        summary_res = model.generate_content(summary_prompt)
 
-    return {"status": "batch_processed", "results": results}
-
-@app.delete("/documents/{file_name}")
-def delete_document(file_name: str):
-    """نقطة حذف مستند معين ومتجهاته من النظام"""
-    secret_key = os.getenv("RAG_INGEST_SECRET")
-    if not secret_key:
-        raise HTTPException(status_code=500, detail="RAG Secret is missing")
-
-    try:
-        headers = {
-            "Content-Type": "application/json",
-            "x-ingest-secret": secret_key
+        # تحضير الهيكل المسترجع لـ Lovable
+        formatted_table = {
+            "columns": columns,
+            "rows": [dict(zip(columns, row)) for row in rows]
         }
-        response = requests.delete(f"{LOVABLE_DELETE_URL}/{file_name}", headers=headers, timeout=15)
-        
-        if response.status_code == 200:
-            return {"status": "success", "message": f"Document '{file_name}' deleted successfully."}
-        else:
-            return {"status": "info", "message": f"Delete request sent for '{file_name}'."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/chat")
-def chat(request: QueryRequest):
-    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-    secret_key = os.getenv("RAG_INGEST_SECRET")
-    
-    if not api_key:
-        raise HTTPException(status_code=500, detail="API Key is missing")
+        # إنشاء بطاقات أرقام تلقائية في حال وجود مجاميع أو أعداد
+        metrics = []
+        if len(rows) == 1 and len(columns) == 1:
+            metrics.append({"label": columns[0], "value": str(rows[0][0])})
 
-    try:
-        context_str = ""
-        sources = []
-        
-        if secret_key:
-            try:
-                query_embedding = get_embedding(request.question, api_key)
-                
-                headers = {
-                    "Content-Type": "application/json",
-                    "x-ingest-secret": secret_key
-                }
-                
-                search_payload = {
-                    "embedding": query_embedding,
-                    "match_count": 5
-                }
-                
-                search_response = requests.post(LOVABLE_SEARCH_URL, json=search_payload, headers=headers, timeout=15)
-                
-                if search_response.status_code == 200:
-                    matches = search_response.json()
-                    if isinstance(matches, dict):
-                        matches = matches.get("matches", matches.get("results", []))
-                        
-                    context_chunks = []
-                    for match in matches:
-                        chunk_text = match.get("chunk_text") or match.get("content", "")
-                        file_name = match.get("file_name") or match.get("metadata", {}).get("file_name", "Document")
-                        similarity = match.get("similarity") or match.get("score", 0)
-                        
-                        if chunk_text:
-                            context_chunks.append(f"[{file_name}]: {chunk_text}")
-                            sources.append({"file_name": file_name, "score": similarity})
-                    
-                    context_str = "\n\n".join(context_chunks)
-            except Exception as e:
-                print(f"RAG Search warning: {e}")
-
-        from llama_index.llms.gemini import Gemini
-        
-        gemini_llm = Gemini(model_name="models/gemini-3.8-flash", api_key=api_key)
-        
-        if context_str:
-            prompt = (
-                f"You are an enterprise AI assistant. Use the following retrieved document excerpts to answer the question accurately and cite the sources.\n\n"
-                f"Context:\n{context_str}\n\n"
-                f"Question: {request.question}\n\n"
-                f"Answer:"
-            )
-        else:
-            prompt = request.question
-
-        response = gemini_llm.complete(prompt)
-        
         return {
-            "answer": str(response),
-            "sources": sources
+            "summary": summary_res.text.strip(),
+            "sql_query": sql_query,
+            "table": formatted_table,
+            "metrics": metrics
         }
-        
+
     except Exception as e:
-        error_details = f"Gemini/RAG Error: {str(e)}"
-        print(f"CRITICAL ERROR: {error_details}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=error_details)
+        raise HTTPException(status_code=500, detail=f"Database Query Error: {str(e)}")
