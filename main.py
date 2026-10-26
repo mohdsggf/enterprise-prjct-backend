@@ -72,14 +72,20 @@ class QueryRequest(BaseModel):
     db_url: str = None  # رابط الاتصال الاختياري لقاعدة بيانات العميل (مثل PostgreSQL)
 
 def generate_with_fallback(prompt_text: str):
-    """الاعتماد حصرياً على gemini-1.5-flash لضمان الكوتا الكبيرة (1500 طلب يومياً)"""
-    candidate_models = ["gemini-1.5-flash"]
+    """دالة مرنة لتوليد النص مع تجربة عدة موديلات ميسورة ومستقرة لتجنب أخطاء 404"""
+    candidate_models = [
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-002",
+        "gemini-2.0-flash",
+        "gemini-flash"
+    ]
     last_error = None
     for model_name in candidate_models:
         try:
             model = genai.GenerativeModel(model_name)
             res = model.generate_content(prompt_text)
-            return res.text
+            if res and res.text:
+                return res.text
         except Exception as e:
             last_error = e
             continue
