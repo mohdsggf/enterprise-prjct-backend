@@ -6,8 +6,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import google.generativeai as genai
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
-app = FastAPI(title="Enterprise AI Engine & Text-to-SQL")
+app = FastAPI(title="Enterprise Sovereign AI & Text-to-SQL Engine")
 
 # إعدادات CORS للسماح لـ Lovable بالاتصال بالـ Backend
 app.add_middleware(
@@ -18,15 +20,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# تهيئة Gemini API (يدعم GEMINI_API_KEY أو GOOGLE_API_KEY)
+# تهيئة Gemini API
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-DB_FILE = "demo_company.db"
+DEFAULT_DB_FILE = "demo_company.db"
 
 def init_demo_db():
-    conn = sqlite3.connect(DB_FILE)
+    """إنشاء قاعدة بيانات تجريبية محلية للاختبار"""
+    conn = sqlite3.connect(DEFAULT_DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS sales (
@@ -66,9 +69,10 @@ init_demo_db()
 
 class QueryRequest(BaseModel):
     question: str
+    db_url: str = None  # رابط الاتصال الاختياري لقاعدة بيانات العميل (مثل PostgreSQL)
 
 def generate_with_fallback(prompt_text: str):
-    """دالة مرنة لتوليد النص وتجربة الموديلات المتاحة تلقائياً"""
+    """دالة مرنة لتوليد النص مع موديلات Gemini"""
     candidate_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-flash-latest"]
     last_error = None
     for model_name in candidate_models:
@@ -81,50 +85,73 @@ def generate_with_fallback(prompt_text: str):
             continue
     raise Exception(f"All Gemini models failed. Last error: {str(last_error)}")
 
+def execute_query(db_url: str, sql_query: str):
+    """تنفيذ استعلام SQL بناءً على نوع قاعدة البيانات (SQLite أو PostgreSQL)"""
+    if db_url and db_url.startswith("postgres"):
+        # اتصال بقاعدة بيانات PostgreSQL حقيقية للعميل
+        conn = psycopg2.connect(db_url)
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute(sql_query)
+        rows = cursor.fetchall()
+        # تحويل النتائج إلى قوائم وقواميس متوافقة
+        if rows:
+            columns = list(rows[0].keys())
+            formatted_rows = [list(row.values()) for row in rows]
+        else:
+            columns = []
+            formatted_rows = []
+        conn.close()
+        return columns, formatted_rows
+    else:
+        # الاتصال الافتراضي بقاعدة البيانات التجريبية SQLite
+        conn = sqlite3.connect(DEFAULT_DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(sql_query)
+        rows = cursor.fetchall()
+        columns = [description[0] for description in cursor.description]
+        conn.close()
+        return columns, rows
+
 @app.post("/api/query-database")
 def query_database(req: QueryRequest):
     if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="Gemini API Key is missing.")
     
     try:
+        # Schema الوصفية (يمكن جعلها ديناميكية لاحقاً لتستخرج من قاعدة بيانات العميل مباشرة)
         db_schema = """
         Table: sales
         Columns:
         - id: INTEGER (Primary Key)
-        - branch: TEXT (اسم الفرع، مثل 'فرع الروضة', 'فرع العليا', 'فرع الشاطئ', 'فرع الفيصلية')
-        - city: TEXT (المدينة، مثل 'جدة', 'الرياض', 'الدمام')
+        - branch: TEXT (اسم الفرع، مثل 'فرع الروضة', 'فرع العليا')
+        - city: TEXT (المدينة، مثل 'جدة', 'الرياض')
         - product_name: TEXT (اسم المنتج)
-        - category: TEXT (الفئة، مثل 'وجبات', 'مقبلات', 'مشروبات', 'حلويات')
+        - category: TEXT (الفئة)
         - quantity: INTEGER (الكمية المباعة)
-        - unit_price: REAL (سعر الوحدة بالريال)
-        - total_amount: REAL (المبلغ الإجمالي بالريال = quantity * unit_price)
-        - sale_date: DATE (تاريخ البيع بتنسيق YYYY-MM-DD)
+        - unit_price: REAL (سعر الوحدة)
+        - total_amount: REAL (المبلغ الإجمالي)
+        - sale_date: DATE (تاريخ البيع YYYY-MM-DD)
         """
 
         prompt = f"""
-        You are an expert SQLite SQL developer. 
+        You are an expert SQL developer. 
         Database Schema:
         {db_schema}
 
         User Question: "{req.question}"
 
         Tasks:
-        1. Generate a valid SQLite SQL query to answer the user question.
+        1. Generate a valid SQL query to answer the user question.
         2. Return ONLY the raw SQL query without any explanation, markdown, code blocks (```sql), or extra text.
         """
 
         raw_sql_response = generate_with_fallback(prompt)
         sql_query = raw_sql_response.strip().replace("```sql", "").replace("```", "").strip()
 
-        # تنفيذ استعلام SQL
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute(sql_query)
-        rows = cursor.fetchall()
-        columns = [description[0] for description in cursor.description]
-        conn.close()
+        # تنفيذ الاستعلام عبر الدالة المرنة
+        columns, rows = execute_query(req.db_url, sql_query)
 
-        # صياغة الملخص
+        # صياغة الملخص التحليلي
         summary_prompt = f"""
         السؤال: "{req.question}"
         استعلام SQL المنفذ: "{sql_query}"
@@ -132,7 +159,7 @@ def query_database(req: QueryRequest):
         الأعمدة: {columns}
         الصفوف: {rows}
 
-        المطلوب: قم بصياغة إجابة ملخصة واحترافية باللغة العربية تشرح نتائج البيانات بدقة وبساطة.
+        المطلوب: قم بصياغة إجابة ملخصة واحترافية باللغة العربية تشرح نتائج البيانات بدقة وبساطة بدون رموز زائدة.
         """
         summary_text = generate_with_fallback(summary_prompt)
 
