@@ -72,8 +72,8 @@ class QueryRequest(BaseModel):
     db_url: str = None  # رابط الاتصال الاختياري لقاعدة بيانات العميل (مثل PostgreSQL)
 
 def generate_sql_with_gemini(prompt_text: str):
-    """استدعاء Gemini لتوليد الـ SQL فقط (طلب واحد لتقليل استهلاك الكوتا)"""
-    model = genai.GenerativeModel("gemini-3.8-flash")
+    """استخدام gemini-1.5-flash لضمان الحصة الكبيرة (1500 طلب يومياً)"""
+    model = genai.GenerativeModel("gemini-1.5-flash")
     res = model.generate_content(prompt_text)
     if res and res.text:
         return res.text
@@ -135,14 +135,13 @@ def query_database(req: QueryRequest):
         2. Return ONLY the raw SQL query without any explanation, markdown, code blocks (```sql), or extra text.
         """
 
-        # طلب واحد فقط لـ Gemini لتوليد الـ SQL
+        # توليد الـ SQL باستخدام gemini-1.5-flash
         raw_sql_response = generate_sql_with_gemini(prompt)
         sql_query = raw_sql_response.strip().replace("```sql", "").replace("```", "").strip()
 
         # تنفيذ الاستعلام
         columns, rows = execute_query(req.db_url, sql_query)
 
-        # صياغة الملخص محلياً بدون استهلاك إضافي للـ API
         summary_text = f"إليك النتائج المستخرجة بناءً على سؤالك (تم العثور على {len(rows)} نتيجة):"
 
         formatted_table = {
