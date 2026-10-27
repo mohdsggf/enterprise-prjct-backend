@@ -72,7 +72,7 @@ class QueryRequest(BaseModel):
     db_url: str = None  # رابط الاتصال الاختياري لقاعدة بيانات العميل (مثل PostgreSQL)
 
 def generate_with_fallback(prompt_text: str):
-    """استخدام الموديل المطلوب رسمياً من جوجل gemini-3.8-flash"""
+    """استخدام gemini-3.8-flash لتوليد كود الـ SQL بدقة"""
     candidate_models = ["gemini-3.8-flash"]
     last_error = None
     for model_name in candidate_models:
@@ -89,12 +89,10 @@ def generate_with_fallback(prompt_text: str):
 def execute_query(db_url: str, sql_query: str):
     """تنفيذ استعلام SQL بناءً على نوع قاعدة البيانات (SQLite أو PostgreSQL)"""
     if db_url and db_url.startswith("postgres"):
-        # اتصال بقاعدة بيانات PostgreSQL حقيقية للعميل
         conn = psycopg2.connect(db_url)
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute(sql_query)
         rows = cursor.fetchall()
-        # تحويل النتائج إلى قوائم وقواميس متوافقة
         if rows:
             columns = list(rows[0].keys())
             formatted_rows = [list(row.values()) for row in rows]
@@ -104,7 +102,6 @@ def execute_query(db_url: str, sql_query: str):
         conn.close()
         return columns, formatted_rows
     else:
-        # الاتصال الافتراضي بقاعدة البيانات التجريبية SQLite
         conn = sqlite3.connect(DEFAULT_DB_FILE)
         cursor = conn.cursor()
         cursor.execute(sql_query)
@@ -119,7 +116,6 @@ def query_database(req: QueryRequest):
         raise HTTPException(status_code=500, detail="Gemini API Key is missing.")
     
     try:
-        # Schema الوصفية (يمكن جعلها ديناميكية لاحقاً لتستخرج من قاعدة بيانات العميل مباشرة)
         db_schema = """
         Table: sales
         Columns:
@@ -146,23 +142,15 @@ def query_database(req: QueryRequest):
         2. Return ONLY the raw SQL query without any explanation, markdown, code blocks (```sql), or extra text.
         """
 
+        # استدعاء الذكاء الاصطناعي مرة واحدة فقط لتوليد الـ SQL
         raw_sql_response = generate_with_fallback(prompt)
         sql_query = raw_sql_response.strip().replace("```sql", "").replace("```", "").strip()
 
-        # تنفيذ الاستعلام عبر الدالة المرنة
+        # تنفيذ الاستعلام على قاعدة البيانات
         columns, rows = execute_query(req.db_url, sql_query)
 
-        # صياغة الملخص التحليلي
-        summary_prompt = f"""
-        السؤال: "{req.question}"
-        استعلام SQL المنفذ: "{sql_query}"
-        نتائج قاعدة البيانات:
-        الأعمدة: {columns}
-        الصفوف: {rows}
-
-        المطلوب: قم بصياغة إجابة ملخصة واحترافية باللغة العربية تشرح نتائج البيانات بدقة وبساطة بدون رموز زائدة.
-        """
-        summary_text = generate_with_fallback(summary_prompt)
+        # توليد الملخص برمجيًا (لتوفير استهلاك الـ API وتجنب أخطاء الكوتا)
+        summary_text = f"بناءً على سؤالك، تم تنفيذ الاستعلام بنجاح وإرجاع {len(rows)} نتيجة من قاعدة البيانات."
 
         formatted_table = {
             "columns": columns,
@@ -174,7 +162,7 @@ def query_database(req: QueryRequest):
             metrics.append({"label": columns[0], "value": str(rows[0][0])})
 
         return {
-            "summary": summary_text.strip(),
+            "summary": summary_text,
             "sql_query": sql_query,
             "table": formatted_table,
             "metrics": metrics
