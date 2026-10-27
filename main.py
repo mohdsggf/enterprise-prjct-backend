@@ -71,20 +71,13 @@ class QueryRequest(BaseModel):
     question: str
     db_url: str = None  # رابط الاتصال الاختياري لقاعدة بيانات العميل (مثل PostgreSQL)
 
-def generate_with_fallback(prompt_text: str):
-    """استخدام gemini-3.8-flash لتوليد كود الـ SQL بدقة"""
-    candidate_models = ["gemini-3.8-flash"]
-    last_error = None
-    for model_name in candidate_models:
-        try:
-            model = genai.GenerativeModel(model_name)
-            res = model.generate_content(prompt_text)
-            if res and res.text:
-                return res.text
-        except Exception as e:
-            last_error = e
-            continue
-    raise Exception(f"All Gemini models failed. Last error: {str(last_error)}")
+def generate_sql_with_gemini(prompt_text: str):
+    """استدعاء Gemini لتوليد الـ SQL فقط (طلب واحد لتقليل استهلاك الكوتا)"""
+    model = genai.GenerativeModel("gemini-3.8-flash")
+    res = model.generate_content(prompt_text)
+    if res and res.text:
+        return res.text
+    raise Exception("Model returned empty response.")
 
 def execute_query(db_url: str, sql_query: str):
     """تنفيذ استعلام SQL بناءً على نوع قاعدة البيانات (SQLite أو PostgreSQL)"""
@@ -142,15 +135,15 @@ def query_database(req: QueryRequest):
         2. Return ONLY the raw SQL query without any explanation, markdown, code blocks (```sql), or extra text.
         """
 
-        # استدعاء الذكاء الاصطناعي مرة واحدة فقط لتوليد الـ SQL
-        raw_sql_response = generate_with_fallback(prompt)
+        # طلب واحد فقط لـ Gemini لتوليد الـ SQL
+        raw_sql_response = generate_sql_with_gemini(prompt)
         sql_query = raw_sql_response.strip().replace("```sql", "").replace("```", "").strip()
 
-        # تنفيذ الاستعلام على قاعدة البيانات
+        # تنفيذ الاستعلام
         columns, rows = execute_query(req.db_url, sql_query)
 
-        # توليد الملخص برمجيًا (لتوفير استهلاك الـ API وتجنب أخطاء الكوتا)
-        summary_text = f"بناءً على سؤالك، تم تنفيذ الاستعلام بنجاح وإرجاع {len(rows)} نتيجة من قاعدة البيانات."
+        # صياغة الملخص محلياً بدون استهلاك إضافي للـ API
+        summary_text = f"إليك النتائج المستخرجة بناءً على سؤالك (تم العثور على {len(rows)} نتيجة):"
 
         formatted_table = {
             "columns": columns,
