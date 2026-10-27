@@ -98,23 +98,13 @@ def generate_sql_with_gemini(prompt_text: str, user_question: str):
     return local_fallback_sql_generator(user_question)
 
 def build_detailed_summary(question: str, columns: list, rows: list) -> str:
-    """بناء ملخص نصي تفصيلي وغني بالمعلومات لعرضه في واجهة Lovable"""
+    """بناء ملخص نصي تنفيذي وذكي يشبه تحليل خبير البيانات"""
     if not rows:
-        return "عذراً، لم يتم العثور على أي نتائج مطابقة لسؤالك في قاعدة البيانات."
+        return "عذراً، لم يتم العثور على أي بيانات مطابقة لسؤالك في قاعدة البيانات."
     
-    summary = f"📊 **نتيجة التحليل الذكي:** بناءً على سؤالك (*\"{question}\"*)\n\n"
-    summary += f"تم العثور على **{len(rows)} سجلات مطابقة**، وإليك أبرز التفاصيل المستخرجة:\n\n"
+    # صياغة تحليلية ذكية ومختصرة تخاطب المدراء والعملاء
+    summary = f"📊 **التحليل التنفيذي:** بناءً على سؤالك (*\"{question}\"*)، أظهرت البيانات استخراج **{len(rows)} سجلات** مطابقة. يمكنك استعراض كافة التفاصيل والأرقام بدقة واضحة في الجدول أدناه."
     
-    # عرض أول 5 صفوف كملخص نصي سريع وواضح
-    max_display = min(5, len(rows))
-    for i in range(max_display):
-        row_dict = dict(zip(columns, rows[i]))
-        details_str = " | ".join([f"**{k}**: {v}" for k, v in row_dict.items()])
-        summary += f"- {details_str}\n"
-    
-    if len(rows) > 5:
-        summary += f"\n*(...و {len(rows) - 5} سجلات إضافية معروضة في الجدول أدناه)*"
-        
     return summary
 
 def execute_query(db_url: str, sql_query: str):
@@ -176,7 +166,7 @@ def query_database(req: QueryRequest):
         # تنفيذ الاستعلام وجلب الأعمدة والصفوف
         columns, rows = execute_query(req.db_url, sql_query)
 
-        # بناء ملخص نصي تفصيلي وغني
+        # بناء ملخص نصي تنفيذي نظيف
         summary_text = build_detailed_summary(req.question, columns, rows)
 
         formatted_table = {
