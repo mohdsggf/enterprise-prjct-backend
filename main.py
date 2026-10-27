@@ -72,7 +72,7 @@ class QueryRequest(BaseModel):
     db_url: str = None  # رابط الاتصال الاختياري لقاعدة بيانات العميل (مثل PostgreSQL)
 
 def local_fallback_sql_generator(question: str) -> str:
-    """مولد SQL محلي ذكي يعمل فوراً إذا نفدت كوتا جوجل لضمان استمرار التجربة"""
+    """مولد SQL محلي ذكي يعمل فوراً إذا نفدت كوتا جوجل"""
     q = question.lower()
     if "منتج" in q or "صنف" in q or "مبيعات" in q:
         return "SELECT product_name, SUM(quantity) as total_qty, SUM(total_amount) as total_sales FROM sales GROUP BY product_name;"
@@ -86,18 +86,36 @@ def local_fallback_sql_generator(question: str) -> str:
         return "SELECT * FROM sales;"
 
 def generate_sql_with_gemini(prompt_text: str, user_question: str):
-    """محاولة استخدام Gemini، وإذا حدث خطأ كوتا (429) يتم التحويل بسلاسة للمولد المحلي"""
+    """محاولة استخدام Gemini، وإذا حدث خطأ كوتا يتم التحويل بسلاسة للمولد المحلي"""
     try:
         model = genai.GenerativeModel("gemini-3.8-flash")
         res = model.generate_content(prompt_text)
         if res and res.text:
             return res.text.strip().replace("```sql", "").replace("```", "").strip()
     except Exception as e:
-        # إذا انتهت الكوتا أو حدث خطأ، نستخدم النظام المحلي الفوري
-        print(f"Gemini API quota exceeded or error, falling back to local engine: {str(e)}")
+        print(f"Gemini API quota exceeded, using local engine: {str(e)}")
     
-    # الحل الاحتياطي الفوري
     return local_fallback_sql_generator(user_question)
+
+def build_detailed_summary(question: str, columns: list, rows: list) -> str:
+    """بناء ملخص نصي تفصيلي وغني بالمعلومات لعرضه في واجهة Lovable"""
+    if not rows:
+        return "عذراً، لم يتم العثور على أي نتائج مطابقة لسؤالك في قاعدة البيانات."
+    
+    summary = f"📊 **نتيجة التحليل الذكي:** بناءً على سؤالك (*\"{question}\"*)\n\n"
+    summary += f"تم العثور على **{len(rows)} سجلات مطابقة**، وإليك أبرز التفاصيل المستخرجة:\n\n"
+    
+    # عرض أول 5 صفوف كملخص نصي سريع وواضح
+    max_display = min(5, len(rows))
+    for i in range(max_display):
+        row_dict = dict(zip(columns, rows[i]))
+        details_str = " | ".join([f"**{k}**: {v}" for k, v in row_dict.items()])
+        summary += f"- {details_str}\n"
+    
+    if len(rows) > 5:
+        summary += f"\n*(...و {len(rows) - 5} سجلات إضافية معروضة في الجدول أدناه)*"
+        
+    return summary
 
 def execute_query(db_url: str, sql_query: str):
     """تنفيذ استعلام SQL بناءً على نوع قاعدة البيانات (SQLite أو PostgreSQL)"""
@@ -152,13 +170,14 @@ def query_database(req: QueryRequest):
         2. Return ONLY the raw SQL query without any explanation, markdown, code blocks (```sql), or extra text.
         """
 
-        # توليد الـ SQL مع الحماية التلقائية ضد نفاد الكوتا
+        # توليد الـ SQL
         sql_query = generate_sql_with_gemini(prompt, req.question)
 
-        # تنفيذ الاستعلام
+        # تنفيذ الاستعلام وجلب الأعمدة والصفوف
         columns, rows = execute_query(req.db_url, sql_query)
 
-        summary_text = f"إليك النتائج المستخرجة بناءً على سؤالك (تم العثور على {len(rows)} نتيجة):"
+        # بناء ملخص نصي تفصيلي وغني
+        summary_text = build_detailed_summary(req.question, columns, rows)
 
         formatted_table = {
             "columns": columns,
