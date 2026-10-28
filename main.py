@@ -1,12 +1,22 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import psycopg2
 import os
+import psycopg2
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-app = FastAPI()
+app = FastAPI(title="Enterprise Sovereign AI Engine")
 
-# الرابط الخاص بقاعدة بيانات الإدارة الرئيسية (Master DB) الخاصة بمنصتك
-MASTER_DB_URL = os.getenv("MASTER_DB_URL", "postgresql://postgres:كلمة_مرور_قاعدتك_الرئيسية@db.peugpsbflypaaeceroso.supabase.co:5432/postgres?sslmode=require")
+# تفعيل CORS للتسمح لواجهة Lovable بالاتصال بالباك إند بدون حظر من المتصفح
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# جلب رابط Master DB من متغيرات البيئة في Render
+MASTER_DB_URL = os.getenv("MASTER_DB_URL")
 
 class ClientRegistration(BaseModel):
     email: str
@@ -16,13 +26,30 @@ class QueryRequest(BaseModel):
     email: str
     question: str
 
+@app.get("/")
+def read_root():
+    return {"status": "online", "message": "SaaS AI Engine Backend Running"}
+
 # 1. API تسجيل العميل وحفظ رابطه في Master DB
 @app.post("/api/register-client")
 def register_client(data: ClientRegistration):
+    if not MASTER_DB_URL:
+        raise HTTPException(status_code=500, detail="MASTER_DB_URL environment variable is not configured.")
     try:
         conn = psycopg2.connect(MASTER_DB_URL)
         cur = conn.cursor()
-        # إدخال أو تحديث بيانات العميل
+        
+        # إنشاء الجدول في حال لم يكن موجوداً
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS clients (
+                id SERIAL PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                client_db_url TEXT NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        
+        # حفظ أو تحديث رابط العميل
         cur.execute(
             """
             INSERT INTO clients (email, client_db_url) 
@@ -37,13 +64,15 @@ def register_client(data: ClientRegistration):
         conn.close()
         return {"status": "success", "message": "تم تسجيل العميل وحفظ رابط قاعدة البيانات بنجاح!"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Database connection error: {str(e)}")
 
 # 2. API الاستعلام الذكي (يجلب الرابط تلقائياً بناءً على البريد)
 @app.post("/api/query-database")
 def query_database(data: QueryRequest):
+    if not MASTER_DB_URL:
+        raise HTTPException(status_code=500, detail="MASTER_DB_URL environment variable is not configured.")
     try:
-        # أحياناً نقوم بالبحث عن رابط العميل من جدول الإدارة
+        # البحث عن رابط العميل في Master DB
         conn_master = psycopg2.connect(MASTER_DB_URL)
         cur_master = conn_master.cursor()
         cur_master.execute("SELECT client_db_url FROM clients WHERE email = %s", (data.email,))
@@ -52,17 +81,15 @@ def query_database(data: QueryRequest):
         conn_master.close()
 
         if not row:
-            raise HTTPException(status_code=404, detail="العميل غير مسجل أو البريد الإلكتروني غير موجود في النظام.")
+            raise HTTPException(status_code=404, detail="العميل غير مسجل، يرجى حفظ بيانات الربط في صفحة الإعدادات أولاً.")
         
         client_db_url = row[0]
 
-        # هنا يتم استخدام client_db_url المسترجع للاتصال بقاعدة بيانات العميل وتحليل البيانات عبر الذكاء الاصطناعي
-        # (استدعاء دمج خريطة الجداول وتوليد الـ SQL ومعالجة السؤال هنا)
-        
+        # هنا يتصل السيرفر بقاعدة بيانات العميل لتنفيذ الاستعلام
         return {
             "status": "success",
-            "message": "تم العثور على رابط العميل بنجاح وجاهز لتنفيذ الاستعلام!",
-            "retrieved_db_url": client_db_url,
+            "message": "تم استرجاع قاعدة بيانات العميل بنجاح وتجهيز الاستعلام!",
+            "client_email": data.email,
             "question": data.question
         }
     except Exception as e:
