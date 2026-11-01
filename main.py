@@ -110,8 +110,8 @@ def query_database(data: QueryRequest):
 
         schema_text = "\n".join([f"Table '{t}': " + ", ".join(cols) for t, cols in schema_description.items()])
 
-        # ج. استخدام Gemini لتوليد استعلام SQL آمن
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # ج. استخدام النموذج المحدث gemini-2.0-flash لتوليد استعلام SQL آمن
+        model = genai.GenerativeModel('gemini-2.0-flash')
         prompt = f"""
         You are an expert SQL assistant. Given the following database schema of the client:
         {schema_text}
@@ -135,7 +135,7 @@ def query_database(data: QueryRequest):
         client_cur.close()
         client_conn.close()
 
-        # هـ. صياغة الإجابة النهائية باللغة العربية بواسطة Gemini
+        # هـ. صياغة الإجابة النهائية باللغة العربية بواسطة النموذج
         format_prompt = f"""
         User Question: {data.question}
         SQL Query Used: {sql_query}
