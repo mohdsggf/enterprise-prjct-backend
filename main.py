@@ -3,11 +3,11 @@ import psycopg2
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import google.generativeai as genai
 
-# 1. تعريف التطبيق أولاً قبل أي مسارات أو decorators
 app = FastAPI(title="Enterprise Sovereign AI Engine")
 
-# 2. تفعيل الـ CORS
+# تفعيل الـ CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,8 +16,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 3. جلب رابط قاعدة بيانات الإدارة
+# جلب متغيرات البيئة
 MASTER_DB_URL = os.getenv("MASTER_DB_URL")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 class ClientRegistration(BaseModel):
     email: str
@@ -31,13 +35,12 @@ class QueryRequest(BaseModel):
 def read_root():
     return {"status": "online", "message": "SaaS AI Engine Backend Running"}
 
-# 4. مسار تسجيل العميل
+# 1. مسار تسجيل العميل
 @app.post("/api/register-client")
 def register_client(data: ClientRegistration):
     if not MASTER_DB_URL:
         raise HTTPException(status_code=500, detail="MASTER_DB_URL environment variable is not configured.")
     try:
-        print(f"Attempting to connect with MASTER_DB_URL...")
         conn = psycopg2.connect(MASTER_DB_URL)
         cur = conn.cursor()
         
@@ -64,15 +67,18 @@ def register_client(data: ClientRegistration):
         conn.close()
         return {"status": "success", "message": "تم تسجيل العميل وحفظ رابط قاعدة البيانات بنجاح!"}
     except Exception as e:
-        print(f"CRITICAL ERROR in register_client: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-# 5. مسار الاستعلام الذكي
+# 2. مسار الاستعلام الذكي (Text-to-SQL RAG Engine)
 @app.post("/api/query-database")
 def query_database(data: QueryRequest):
     if not MASTER_DB_URL:
         raise HTTPException(status_code=500, detail="MASTER_DB_URL environment variable is not configured.")
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY environment variable is not configured.")
+    
     try:
+        # أ. جلب رابط قاعدة بيانات العميل من الـ Master DB بناءً على البريد
         conn_master = psycopg2.connect(MASTER_DB_URL)
         cur_master = conn_master.cursor()
         cur_master.execute("SELECT client_db_url FROM clients WHERE email = %s", (data.email,))
@@ -85,11 +91,68 @@ def query_database(data: QueryRequest):
         
         client_db_url = row[0]
 
+        # ب. الاتصال بقاعدة بيانات العميل وسحب هيكل الجداول (Schema)
+        client_conn = psycopg2.connect(client_db_url)
+        client_cur = client_conn.cursor()
+        
+        client_cur.execute("""
+            SELECT table_name, column_name, data_type 
+            FROM information_schema.columns 
+            WHERE table_schema = 'public';
+        """)
+        schema_rows = client_cur.fetchall()
+        
+        schema_description = {}
+        for table, col, dtype in schema_rows:
+            if table not in schema_description:
+                schema_description[table] = []
+            schema_description[table].append(f"{col} ({dtype})")
+
+        schema_text = "\n".join([f"Table '{t}': " + ", ".join(cols) for t, cols in schema_description.items()])
+
+        # ج. استخدام Gemini لتوليد استعلام SQL آمن وقراءة البيانات
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        prompt = f"""
+        You are an expert SQL assistant. Given the following database schema of the client:
+        {schema_text}
+
+        Write a safe, read-only SQL SELECT query to answer this user question: "{data.question}"
+        Return ONLY the raw SQL query inside a markdown code block or plain text, nothing else. No explanation.
+        """
+        
+        response = model.generate_content(prompt)
+        sql_query = response.text.strip().replace("```sql", "").replace("```", "").strip()
+
+        # التحقق من أن الاستعلام آمن وقراءة فقط (SELECT)
+        if not sql_query.lower().startswith("select"):
+            raise HTTPException(status_code=400, detail="Generated query is not a valid read-only SELECT statement.")
+
+        # د. تنفيذ الاستعلام على قاعدة بيانات العميل
+        client_cur.execute(sql_query)
+        query_results = client_cur.fetchall()
+        column_names = [desc[0] for desc in client_cur.description] if client_cur.description else []
+        
+        client_cur.close()
+        client_conn.close()
+
+        # هـ. صياغة الإجابة النهائية باللغة العربية بواسطة Gemini
+        format_prompt = f"""
+        User Question: {data.question}
+        SQL Query Used: {sql_query}
+        Query Results (Rows): {query_results[:50]} (Columns: {column_names})
+
+        Provide a clear, professional, and natural language response in Arabic answering the user's question based on these results.
+        """
+        format_response = model.generate_content(format_prompt)
+        final_answer = format_response.text
+
         return {
             "status": "success",
-            "message": "تم استرجاع قاعدة بيانات العميل بنجاح وتجهيز الاستعلام!",
-            "client_email": data.email,
-            "question": data.question
+            "sql_query": sql_query,
+            "columns": column_names,
+            "rows": query_results,
+            "answer": final_answer
         }
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Query execution error: {str(e)}")
