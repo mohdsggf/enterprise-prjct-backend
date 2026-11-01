@@ -3,7 +3,7 @@ import psycopg2
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from google import genai
+import google.generativeai as genai
 
 app = FastAPI(title="Enterprise Sovereign AI Engine")
 
@@ -20,8 +20,8 @@ app.add_middleware(
 MASTER_DB_URL = os.getenv("MASTER_DB_URL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# تهيئة العميل الجديد للذكاء الاصطناعي
-client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 class ClientRegistration(BaseModel):
     email: str
@@ -74,7 +74,7 @@ def register_client(data: ClientRegistration):
 def query_database(data: QueryRequest):
     if not MASTER_DB_URL:
         raise HTTPException(status_code=500, detail="MASTER_DB_URL environment variable is not configured.")
-    if not client:
+    if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY environment variable is not configured.")
     
     try:
@@ -110,7 +110,8 @@ def query_database(data: QueryRequest):
 
         schema_text = "\n".join([f"Table '{t}': " + ", ".join(cols) for t, cols in schema_description.items()])
 
-        # ج. استخدام Gemini لتوليد استعلام SQL آمن عبر المكتبة الجديدة
+        # ج. استخدام Gemini لتوليد استعلام SQL آمن
+        model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = f"""
         You are an expert SQL assistant. Given the following database schema of the client:
         {schema_text}
@@ -119,10 +120,7 @@ def query_database(data: QueryRequest):
         Return ONLY the raw SQL query inside a markdown code block or plain text, nothing else. No explanation.
         """
         
-        response = client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=prompt,
-        )
+        response = model.generate_content(prompt)
         sql_query = response.text.strip().replace("```sql", "").replace("```", "").strip()
 
         # التحقق من أن الاستعلام آمن وقراءة فقط (SELECT)
@@ -145,10 +143,7 @@ def query_database(data: QueryRequest):
 
         Provide a clear, professional, and natural language response in Arabic answering the user's question based on these results.
         """
-        format_response = client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=format_prompt,
-        )
+        format_response = model.generate_content(format_prompt)
         final_answer = format_response.text
 
         return {
