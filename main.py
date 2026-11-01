@@ -110,8 +110,8 @@ def query_database(data: QueryRequest):
 
         schema_text = "\n".join([f"Table '{t}': " + ", ".join(cols) for t, cols in schema_description.items()])
 
-        # ج. استخدام النموذج المحدث gemini-2.0-flash لتوليد استعلام SQL آمن
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        # ج. استخدام النموذج المحدث gemini-3.8-flash لتوليد استعلام SQL آمن
+        model = genai.GenerativeModel('gemini-3.8-flash')
         prompt = f"""
         You are an expert SQL assistant. Given the following database schema of the client:
         {schema_text}
