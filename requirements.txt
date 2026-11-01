@@ -1,6 +1,5 @@
 fastapi
 uvicorn
 pydantic
-google-generativeai>=0.8.3
+google-genai
 psycopg2-binary
-pymysql
