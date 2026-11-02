@@ -1,12 +1,12 @@
 import os
-import psycopg2
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import google.generativeai as genai
 from typing import Optional
+from sqlalchemy import create_engine, inspect, text
 
-app = FastAPI(title="Enterprise Sovereign AI Engine")
+app = FastAPI(title="Enterprise Multi-Database Sovereign AI Engine")
 
 # تفعيل الـ CORS
 app.add_middleware(
@@ -32,96 +32,82 @@ class QueryRequest(BaseModel):
     email: str
     question: str
 
-# دالة للتحقق من وجود التوكن الممرر من الواجهة
 def verify_token(authorization: Optional[str] = Header(None)):
-    if not authorization:
-        # السماح بالطلبات مؤقتاً لتسهيل الانتقال أو إطلاق استثناء أمني
-        pass
     return authorization
 
 @app.get("/")
 def read_root():
-    return {"status": "online", "message": "SaaS AI Engine Backend Running with Token Verification"}
+    return {"status": "online", "message": "Multi-DB SaaS AI Engine Backend Running"}
 
-# 1. مسار تسجيل العميل (أثناء الـ Onboarding)
+# 1. مسار تسجيل العميل وحفظ رابط قاعدته (يدعم أي نوع قاعدة بيانات)
 @app.post("/api/register-client")
 def register_client(data: ClientRegistration, token: str = Depends(verify_token)):
     if not MASTER_DB_URL:
         raise HTTPException(status_code=500, detail="MASTER_DB_URL environment variable is not configured.")
     try:
-        conn = psycopg2.connect(MASTER_DB_URL)
-        cur = conn.cursor()
-        
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS clients (
-                id SERIAL PRIMARY KEY,
-                email TEXT UNIQUE NOT NULL,
-                client_db_url TEXT NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
-        
-        cur.execute(
-            """
-            INSERT INTO clients (email, client_db_url) 
-            VALUES (%s, %s)
-            ON CONFLICT (email) 
-            DO UPDATE SET client_db_url = EXCLUDED.client_db_url;
-            """,
-            (data.email.lower().strip(), data.client_db_url.strip())
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
+        master_engine = create_engine(MASTER_DB_URL)
+        with master_engine.connect() as conn:
+            # إنشاء جدول clients في قاعدة الإدارة إذا لم يكن موجوداً
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS clients (
+                    id SERIAL PRIMARY KEY,
+                    email TEXT UNIQUE NOT NULL,
+                    client_db_url TEXT NOT NULL,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
+            """))
+            
+            conn.execute(
+                text("""
+                    INSERT INTO clients (email, client_db_url) 
+                    VALUES (:email, :db_url)
+                    ON CONFLICT (email) 
+                    DO UPDATE SET client_db_url = EXCLUDED.client_db_url;
+                """),
+                {"email": data.email.lower().strip(), "db_url": data.client_db_url.strip()}
+            )
+            conn.commit()
         return {"status": "success", "message": "تم تسجيل العميل وحفظ رابط قاعدة البيانات بنجاح!"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-# 2. مسار الاستعلام الذكي (Text-to-SQL RAG Engine)
+# 2. مسار الاستعلام الذكي المتعدد (Text-to-SQL لجميع أنواع القواعد)
 @app.post("/api/query-database")
 def query_database(data: QueryRequest, token: str = Depends(verify_token)):
-    if not MASTER_DB_URL:
-        raise HTTPException(status_code=500, detail="MASTER_DB_URL environment variable is not configured.")
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY environment variable is not configured.")
+    if not MASTER_DB_URL or not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="Configuration error.")
     
     try:
-        # أ. جلب رابط قاعدة بيانات العميل من الـ Master DB بناءً على البريد
-        conn_master = psycopg2.connect(MASTER_DB_URL)
-        cur_master = conn_master.cursor()
-        cur_master.execute("SELECT client_db_url FROM clients WHERE email = %s", (data.email.lower().strip(),))
-        row = cur_master.fetchone()
-        cur_master.close()
-        conn_master.close()
+        # أ. جلب رابط قاعدة بيانات العميل من الـ Master DB
+        master_engine = create_engine(MASTER_DB_URL)
+        with master_engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT client_db_url FROM clients WHERE email = :email"),
+                {"email": data.email.lower().strip()}
+            )
+            row = result.fetchone()
 
         if not row:
             raise HTTPException(status_code=404, detail="العميل غير مسجل، يرجى إكمال إعدادات الربط أولاً.")
         
         client_db_url = row[0]
 
-        # ب. الاتصال بقاعدة بيانات العميل وسحب هيكل الجداول (Schema)
-        client_conn = psycopg2.connect(client_db_url)
-        client_cur = client_conn.cursor()
-        
-        client_cur.execute("""
-            SELECT table_name, column_name, data_type 
-            FROM information_schema.columns 
-            WHERE table_schema = 'public';
-        """)
-        schema_rows = client_cur.fetchall()
+        # ب. الاتصال بقاعدة بيانات العميل بغض النظر عن نوعها (Postgres, MySQL, SQL Server)
+        client_engine = create_engine(client_db_url)
+        inspector = inspect(client_engine)
         
         schema_description = {}
-        for table, col, dtype in schema_rows:
-            if table not in schema_description:
-                schema_description[table] = []
-            schema_description[table].append(f"{col} ({dtype})")
+        for table_name in inspector.get_table_names():
+            schema_description[table_name] = []
+            for col in inspector.get_columns(table_name):
+                schema_description[table_name].append(f"{col['name']} ({col['type']})")
 
         schema_text = "\n".join([f"Table '{t}': " + ", ".join(cols) for t, cols in schema_description.items()])
 
         # ج. توليد استعلام SQL آمن باستخدام gemini-3.8-flash
         model = genai.GenerativeModel('gemini-3.8-flash')
         prompt = f"""
-        You are an expert SQL assistant. Given the following database schema of the client:
+        You are an expert database and SQL assistant. Given the following database schema:
         {schema_text}
 
         Write a safe, read-only SQL SELECT query to answer this user question: "{data.question}"
@@ -135,12 +121,11 @@ def query_database(data: QueryRequest, token: str = Depends(verify_token)):
             raise HTTPException(status_code=400, detail="Generated query is not a valid read-only SELECT statement.")
 
         # د. تنفيذ الاستعلام على قاعدة بيانات العميل
-        client_cur.execute(sql_query)
-        query_results = client_cur.fetchall()
-        column_names = [desc[0] for desc in client_cur.description] if client_cur.description else []
-        
-        client_cur.close()
-        client_conn.close()
+        with client_engine.connect() as client_conn:
+            query_result = client_conn.connect() if hasattr(client_conn, 'connect') else client_conn
+            result_proxy = client_conn.execute(text(sql_query))
+            column_names = list(result_proxy.keys())
+            query_results = [list(row) for row in result_proxy.fetchall()]
 
         # هـ. صياغة الإجابة النهائية باللغة العربية
         format_prompt = f"""
